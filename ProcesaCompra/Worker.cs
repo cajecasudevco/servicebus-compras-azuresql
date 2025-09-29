@@ -16,6 +16,8 @@ public class Worker : BackgroundService
 
     private readonly ServiceBusClient _sbClient;
     private readonly ServiceBusProcessor _processor;
+    private readonly ServiceBusSender _senderHombre;
+    private readonly ServiceBusSender _senderMujer;
     private readonly IServiceProvider _sp;
 
     public Worker(IConfiguration cfg, IServiceProvider sp)
@@ -30,7 +32,7 @@ public class Worker : BackgroundService
             ?? Environment.GetEnvironmentVariable("SERVICE_BUS_QUEUE_NAME")
             ?? "compras";
 
-        // Destinos (Basic tier = colas, no topics)
+        // Destinos (Basic tier = colas)
         _queueHombre = cfg["ServiceBus:QueueHombre"]
             ?? Environment.GetEnvironmentVariable("HOMBRE_QUEUE_NAME")
             ?? "hombreq";
@@ -44,9 +46,12 @@ public class Worker : BackgroundService
         _processor = _sbClient.CreateProcessor(_queueEntrada, new ServiceBusProcessorOptions
         {
             AutoCompleteMessages = false,
-            MaxConcurrentCalls = 2,
-            PrefetchCount = 10
+            MaxConcurrentCalls = 16,
+            PrefetchCount = 100
         });
+
+        _senderHombre = _sbClient.CreateSender(_queueHombre);
+        _senderMujer = _sbClient.CreateSender(_queueMujer);
 
         _processor.ProcessMessageAsync += OnMessageAsync;
         _processor.ProcessErrorAsync += OnErrorAsync;
@@ -59,14 +64,14 @@ public class Worker : BackgroundService
             var body = Encoding.UTF8.GetString(args.Message.Body);
             var doc = JsonDocument.Parse(body).RootElement;
 
-            var nombre = doc.GetProperty("Nombre").GetString() ?? "";
-            var genero = (doc.TryGetProperty("Genero", out var g) ? g.GetString() : null)?.ToLowerInvariant() ?? "";
+            var nombre = doc.GetProperty("Nombre").GetString() ?? string.Empty;
+            var genero = (doc.TryGetProperty("Genero", out var g) ? g.GetString() : null)?.ToLowerInvariant() ?? string.Empty;
 
             decimal monto = 0m;
             if (doc.TryGetProperty("Monto", out var m) && m.ValueKind != JsonValueKind.Null)
             {
-                if (m.ValueKind == JsonValueKind.Number && m.TryGetDecimal(out var parsed))
-                    monto = parsed;
+                if (m.ValueKind == JsonValueKind.Number && m.TryGetDecimal(out var parsedNum))
+                    monto = parsedNum;
                 else if (m.ValueKind == JsonValueKind.String && decimal.TryParse(m.GetString(), out var parsedStr))
                     monto = parsedStr;
             }
@@ -78,16 +83,13 @@ public class Worker : BackgroundService
             if (genero != "hombre" && genero != "mujer")
                 throw new InvalidOperationException("Genero inválido");
 
-            // 1) Persistir en BD
+            // Persistir (usar DbContextPool en Program.cs para menos GC)
             using var scope = _sp.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ComprasDbContext>();
             db.Compras.Add(new Compra { Nombre = nombre, Genero = genero, Monto = monto, Fecha = fecha });
             await db.SaveChangesAsync();
 
-            // 2) "Fan-out" con colas (Basic tier)
-            var destino = genero == "hombre" ? _queueHombre : _queueMujer;
-            var sender = _sbClient.CreateSender(destino);
-
+            // Envío a cola destino (reutilizando sender; menos overhead)
             var forwardMsg = new ServiceBusMessage(args.Message.Body)
             {
                 ContentType = "application/json",
@@ -95,16 +97,15 @@ public class Worker : BackgroundService
             };
             forwardMsg.ApplicationProperties["genero"] = genero;
 
+            var sender = genero == "hombre" ? _senderHombre : _senderMujer;
             await sender.SendMessageAsync(forwardMsg);
 
-            // 3) Completar mensaje de entrada
             await args.CompleteMessageAsync(args.Message);
-
-            Console.WriteLine($"[OK] Compra de {nombre} ({genero}) ${monto} -> cola '{destino}' y persistida");
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[ERR] {ex.Message}");
+            // Para demo: abandonamos; en prod, decide DeadLetter según el tipo de error.
             await args.AbandonMessageAsync(args.Message);
         }
     }
@@ -119,14 +120,22 @@ public class Worker : BackgroundService
     {
         await base.StartAsync(cancellationToken);
         await _processor.StartProcessingAsync(cancellationToken);
-        Console.WriteLine($"[START] Escuchando cola entrada '{_queueEntrada}'. Destinos: hombre='{_queueHombre}', mujer='{_queueMujer}'");
+        Console.WriteLine($"[START] {_queueEntrada} -> hombre='{_queueHombre}', mujer='{_queueMujer}' (concurrency=16, prefetch=100)");
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         await _processor.StopProcessingAsync(cancellationToken);
         await base.StopAsync(cancellationToken);
-        Console.WriteLine("[STOP] Procesador detenido");
+    }
+
+    public override void Dispose()
+    {
+        base.Dispose();
+        _senderHombre?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _senderMujer?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _processor?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _sbClient?.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken) => Task.CompletedTask;
