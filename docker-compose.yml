@@ -10,12 +10,4 @@ services:
     ports:
       - "5081:8080"
     depends_on: []
-  procesacompra:
-    build: ./ProcesaCompra
-    container_name: procesacompra
-    environment:
-      - SERVICEBUS_CONNECTION_STRING=${SERVICEBUS_CONNECTION_STRING}
-      - SERVICE_BUS_QUEUE_NAME=${SERVICE_BUS_QUEUE_NAME:-compras}
-      - AZURE_SQL_CONNECTION_STRING=${AZURE_SQL_CONNECTION_STRING}
-    depends_on: []
 

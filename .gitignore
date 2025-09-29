@@ -5,3 +5,17 @@ obj/
 *.db-shm
 *.db-wal
 .vscode/
+
+# Variables locales
+.env
+dockervar
+
+# Scripts de prueba / deploy
+bajar-container-app.sh
+deploy-aca-apps.sh
+deploy-aca-fast.sh
+prueba-carga*.sh
+register-cred.sh
+
+# Infra de laboratorio
+infra/
