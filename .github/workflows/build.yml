@@ -1,30 +1,60 @@
-name: build-and-push
-on: [workflow_dispatch, push]
+name: build-and-push (feature/version-subida)
+
+on:
+  push:
+    branches: [ feature/version-subida ]
+    paths:
+      - "AddCompra/**"
+      - "ProcesaCompra/**"
+      - ".github/workflows/build-and-push.yml"
+  workflow_dispatch: {}  # lo podrás lanzar manualmente; elige la rama feature/version-subida en el UI
+
 jobs:
   build:
+    if: github.ref == 'refs/heads/feature/version-subida'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    env:
+      SHA_TAG: gh-${{ github.sha }}
+      DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USER }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+        with:
+          install: true
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
         with:
           registry: docker.io
-          username: ${{ secrets.DOCKERHUB_USER }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ env.DOCKERHUB_USER }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
+      # --- AddCompra (solo amd64, igual que tu flujo original) ---
       - name: Build & push AddCompra (amd64)
         uses: docker/build-push-action@v6
         with:
           context: ./AddCompra
           platforms: linux/amd64
           push: true
-          tags: docker.io/cajecasudevco/addcompra:amd64-latest,docker.io/cajecasudevco/addcompra:latest
+          provenance: false
+          tags: |
+            docker.io/cajecasudevco/addcompra:latest
+            docker.io/cajecasudevco/addcompra:${{ env.SHA_TAG }}
+
+      # --- ProcesaCompra (solo amd64) ---
       - name: Build & push ProcesaCompra (amd64)
         uses: docker/build-push-action@v6
         with:
           context: ./ProcesaCompra
           platforms: linux/amd64
           push: true
-          tags: docker.io/cajecasudevco/procesacompra:amd64-latest,docker.io/cajecasudevco/procesacompra:latest
+          provenance: false
+          tags: |
+            docker.io/cajecasudevco/procesacompra:latest
+            docker.io/cajecasudevco/procesacompra:${{ env.SHA_TAG }}
