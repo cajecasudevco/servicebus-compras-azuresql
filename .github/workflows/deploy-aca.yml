@@ -1,4 +1,4 @@
-name: deploy-aca (manual reducido)
+name: deploy-aca (manual)
 
 on:
   workflow_dispatch:
@@ -11,19 +11,35 @@ on:
         description: "ACA Environment name"
         required: true
         default: "aca-env-compras"
+      docker_user:
+        description: "Docker Hub user/org"
+        required: true
+        default: "cajecasudevco"
+      image_tag:
+        description: "Tag de imágenes (AddCompra y ProcesaCompra)"
+        required: true
+        default: "latest"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     permissions:
-      id-token: write   # OIDC
+      id-token: write   # Para OIDC
       contents: read
 
     env:
       RG: ${{ inputs.resource_group }}
       ENV_NAME: ${{ inputs.environment_name }}
       LOC: eastus2
+      DOCKER_USER: ${{ inputs.docker_user }}
+      IMG_ADD: docker.io/${{ inputs.docker_user }}/addcompra:${{ inputs.image_tag }}
+      IMG_WKR: docker.io/${{ inputs.docker_user }}/procesacompra:${{ inputs.image_tag }}
+      APP_ADD: addcompra-aca
+      APP_WKR: procesacompra-aca
+      QUEUE_IN: compras
+      QUEUE_H: hombreq
+      QUEUE_M: mujerq
 
     steps:
       - name: Checkout
@@ -36,9 +52,126 @@ jobs:
           tenant-id:  ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Ensure Container Apps extension + providers
+        shell: bash
+        run: |
+          set -euo pipefail
+          az extension add -n containerapp --upgrade || az extension update -n containerapp
+          az provider register --namespace Microsoft.App --wait
+          az provider register --namespace Microsoft.OperationalInsights --wait || true
+
+      - name: Create/ensure ACA Environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          if az containerapp env show -g "$RG" -n "$ENV_NAME" >/dev/null 2>&1; then
+            echo "✓ Environment $ENV_NAME ya existe"
+          else
+            echo "==> Creando env $ENV_NAME en $LOC ..."
+            az containerapp env create -g "$RG" -n "$ENV_NAME" -l "$LOC"
+          fi
+          az containerapp env show -g "$RG" -n "$ENV_NAME" \
+            --query "{Name:name,Location:location,ProvisioningState:properties.provisioningState}" -o table
+
+      - name: Deploy AddCompra (API)
+        shell: bash
+        env:
+          SERVICEBUS_CONNECTION_STRING: ${{ secrets.SERVICEBUS_CONNECTION_STRING }}
+          AZURE_SQL_CONNECTION_STRING:  ${{ secrets.AZURE_SQL_CONNECTION_STRING }}
+          API_TOKEN:                    ${{ secrets.API_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ -n "${SERVICEBUS_CONNECTION_STRING:-}" ]] || { echo "Falta secret SERVICEBUS_CONNECTION_STRING"; exit 1; }
+          [[ -n "${AZURE_SQL_CONNECTION_STRING:-}"  ]] || { echo "Falta secret AZURE_SQL_CONNECTION_STRING"; exit 1; }
+
+          if az containerapp show -g "$RG" -n "$APP_ADD" >/dev/null 2>&1; then
+            echo "==> Actualizando $APP_ADD"
+            az containerapp secret set -g "$RG" -n "$APP_ADD" --secrets \
+              sb-conn="$SERVICEBUS_CONNECTION_STRING" \
+              sql-conn="$AZURE_SQL_CONNECTION_STRING" \
+              api-token="${API_TOKEN:-}" >/dev/null
+
+            az containerapp update -g "$RG" -n "$APP_ADD" \
+              --image "$IMG_ADD" \
+              --set-env-vars \
+                SERVICEBUS_CONNECTION_STRING=secretref:sb-conn \
+                AZURE_SQL_CONNECTION_STRING=secretref:sql-conn \
+                SERVICE_BUS_QUEUE_NAME="$QUEUE_IN" \
+                API_TOKEN=secretref:api-token \
+              --ingress external --target-port 8080 \
+              --min-replicas 0 --max-replicas 1 \
+              --cpu 0.25 --memory 0.5Gi >/dev/null
+          else
+            echo "==> Creando $APP_ADD"
+            az containerapp create -g "$RG" -n "$APP_ADD" --environment "$ENV_NAME" \
+              --image "$IMG_ADD" \
+              --ingress external --target-port 8080 \
+              --min-replicas 0 --max-replicas 1 \
+              --cpu 0.25 --memory 0.5Gi \
+              --secrets sb-conn="$SERVICEBUS_CONNECTION_STRING" sql-conn="$AZURE_SQL_CONNECTION_STRING" api-token="${API_TOKEN:-}" \
+              --env-vars \
+                SERVICEBUS_CONNECTION_STRING=secretref:sb-conn \
+                AZURE_SQL_CONNECTION_STRING=secretref:sql-conn \
+                SERVICE_BUS_QUEUE_NAME="$QUEUE_IN" \
+                API_TOKEN=secretref:api-token >/dev/null
+          fi
+
+      - name: Get AddCompra URL
+        id: url
+        shell: bash
+        run: |
+          set -euo pipefail
+          FQDN=$(az containerapp show -g "$RG" -n "$APP_ADD" --query properties.configuration.ingress.fqdn -o tsv)
+          echo "fqdn=$FQDN" >> $GITHUB_OUTPUT
+
+      - name: Deploy ProcesaCompra (Worker)
+        shell: bash
+        env:
+          SERVICEBUS_CONNECTION_STRING: ${{ secrets.SERVICEBUS_CONNECTION_STRING }}
+          AZURE_SQL_CONNECTION_STRING:  ${{ secrets.AZURE_SQL_CONNECTION_STRING }}
+        run: |
+          set -euo pipefail
+          [[ -n "${SERVICEBUS_CONNECTION_STRING:-}" ]] || { echo "Falta secret SERVICEBUS_CONNECTION_STRING"; exit 1; }
+          [[ -n "${AZURE_SQL_CONNECTION_STRING:-}"  ]] || { echo "Falta secret AZURE_SQL_CONNECTION_STRING"; exit 1; }
+
+          if az containerapp show -g "$RG" -n "$APP_WKR" >/dev/null 2>&1; then
+            echo "==> Actualizando $APP_WKR"
+            az containerapp secret set -g "$RG" -n "$APP_WKR" --secrets \
+              sb-conn="$SERVICEBUS_CONNECTION_STRING" \
+              sql-conn="$AZURE_SQL_CONNECTION_STRING" >/dev/null
+
+            az containerapp update -g "$RG" -n "$APP_WKR" \
+              --image "$IMG_WKR" \
+              --set-env-vars \
+                SERVICEBUS_CONNECTION_STRING=secretref:sb-conn \
+                AZURE_SQL_CONNECTION_STRING=secretref:sql-conn \
+                SERVICE_BUS_QUEUE_NAME="$QUEUE_IN" \
+                HOMBRE_QUEUE_NAME="$QUEUE_H" \
+                MUJER_QUEUE_NAME="$QUEUE_M" \
+              --min-replicas 0 --max-replicas 1 \
+              --cpu 0.25 --memory 0.5Gi >/dev/null
+          else
+            echo "==> Creando $APP_WKR"
+            az containerapp create -g "$RG" -n "$APP_WKR" --environment "$ENV_NAME" \
+              --image "$IMG_WKR" \
+              --min-replicas 0 --max-replicas 1 \
+              --cpu 0.25 --memory 0.5Gi \
+              --secrets sb-conn="$SERVICEBUS_CONNECTION_STRING" sql-conn="$AZURE_SQL_CONNECTION_STRING" \
+              --env-vars \
+                SERVICEBUS_CONNECTION_STRING=secretref:sb-conn \
+                AZURE_SQL_CONNECTION_STRING=secretref:sql-conn \
+                SERVICE_BUS_QUEUE_NAME="$QUEUE_IN" \
+                HOMBRE_QUEUE_NAME="$QUEUE_H" \
+                MUJER_QUEUE_NAME="$QUEUE_M" >/dev/null
+          fi
+
       - name: Echo summary
         run: |
           echo "=========== RESUMEN ==========="
           echo "RG:        $RG"
           echo "ENV:       $ENV_NAME ($LOC)"
+          echo "API:       $APP_ADD  -> https://${{ steps.url.outputs.fqdn }}"
+          echo "Worker:    $APP_WKR"
+          echo "Imgs:      $IMG_ADD | $IMG_WKR"
+          echo "Queues:    IN=$QUEUE_IN | H=$QUEUE_H | M=$QUEUE_M"
           echo "================================"
