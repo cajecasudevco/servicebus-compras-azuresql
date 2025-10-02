@@ -6,7 +6,7 @@ set -euo pipefail
 # =========================================
 RG="${RG:-dockercurso}"
 ENV_NAME="${ENV_NAME:-aca-env-compras}"   # Debe existir
-LOC="${LOC:-eastus2}"                      # Solo informativo
+LOC="${LOC:-eastus2}"                     # Solo informativo
 
 # Imágenes (Docker Hub públicas por simplicidad)
 DOCKER_USER="${DOCKER_USER:-cajecasudevco}"
@@ -23,14 +23,24 @@ QUEUE_H="${HOMBRE_QUEUE_NAME:-hombreq}"
 QUEUE_M="${MUJER_QUEUE_NAME:-mujerq}"
 
 # ============================
-# Cargar .env si existe
+# Función para cargar .env seguro
 # ============================
+load_dotenv_var() {
+  local key="$1"
+  if grep -q -E "^${key}=" .env 2>/dev/null; then
+    local val
+    val="$(grep -E "^${key}=" .env | head -n1 | sed -e "s/^${key}=//")"
+    eval "export ${key}=\"\$val\""
+  fi
+}
+
 if [ -f .env ]; then
-  echo "==> Cargando variables desde .env"
-  set -o allexport
-  # shellcheck disable=SC1091
-  source .env
-  set +o allexport
+  echo "==> Leyendo variables desde .env (sin source)"
+  load_dotenv_var SERVICEBUS_CONNECTION_STRING
+  load_dotenv_var AZURE_SQL_CONNECTION_STRING
+  load_dotenv_var SERVICE_BUS_QUEUE_NAME
+  load_dotenv_var HOMBRE_QUEUE_NAME
+  load_dotenv_var MUJER_QUEUE_NAME
 fi
 
 : "${SERVICEBUS_CONNECTION_STRING:?Falta SERVICEBUS_CONNECTION_STRING (en .env o exportado)}"
