@@ -11,10 +11,6 @@ on:
         description: "ACA Environment name"
         required: true
         default: "aca-env-compras"
-      location:
-        description: "Azure region"
-        required: true
-        default: "eastus2"
       docker_user:
         description: "Docker Hub user/org"
         required: true
@@ -59,7 +55,7 @@ jobs:
     env:
       RG: ${{ inputs.resource_group }}
       ENV_NAME: ${{ inputs.environment_name }}
-      LOC: ${{ inputs.location }}
+      LOC: eastus2                              # <— fijo para respetar el límite de 10 inputs
       DOCKER_USER: ${{ inputs.docker_user }}
       IMG_ADD: docker.io/${{ inputs.docker_user }}/addcompra:${{ inputs.addcompra_tag }}
       IMG_WKR: docker.io/${{ inputs.docker_user }}/procesacompra:${{ inputs.procesacompra_tag }}
@@ -109,7 +105,6 @@ jobs:
           API_TOKEN:                    ${{ secrets.API_TOKEN }}
         run: |
           set -euo pipefail
-
           [[ -n "${SERVICEBUS_CONNECTION_STRING:-}" ]] || { echo "Falta secret SERVICEBUS_CONNECTION_STRING"; exit 1; }
           [[ -n "${AZURE_SQL_CONNECTION_STRING:-}"  ]] || { echo "Falta secret AZURE_SQL_CONNECTION_STRING"; exit 1; }
 
@@ -151,7 +146,6 @@ jobs:
         run: |
           set -euo pipefail
           FQDN=$(az containerapp show -g "$RG" -n "$APP_ADD" --query properties.configuration.ingress.fqdn -o tsv)
-          echo "FQDN=$FQDN"
           echo "fqdn=$FQDN" >> $GITHUB_OUTPUT
 
       - name: Deploy ProcesaCompra (Worker)
@@ -161,7 +155,6 @@ jobs:
           AZURE_SQL_CONNECTION_STRING:  ${{ secrets.AZURE_SQL_CONNECTION_STRING }}
         run: |
           set -euo pipefail
-
           [[ -n "${SERVICEBUS_CONNECTION_STRING:-}" ]] || { echo "Falta secret SERVICEBUS_CONNECTION_STRING"; exit 1; }
           [[ -n "${AZURE_SQL_CONNECTION_STRING:-}"  ]] || { echo "Falta secret AZURE_SQL_CONNECTION_STRING"; exit 1; }
 
