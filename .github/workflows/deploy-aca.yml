@@ -57,8 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           az extension add -n containerapp --upgrade || az extension update -n containerapp
-          az provider register --namespace Microsoft.App --wait
-          az provider register --namespace Microsoft.OperationalInsights --wait || true
+
 
       - name: Create/ensure ACA Environment
         shell: bash
