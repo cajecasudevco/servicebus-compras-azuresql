@@ -1,4 +1,4 @@
-deploy-aca.ymlname: deploy-aca (manual)
+name: deploy-aca (manual)
 
 on:
   workflow_dispatch:
