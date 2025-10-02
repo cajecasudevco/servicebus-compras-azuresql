@@ -23,9 +23,8 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     permissions:
-      id-token: write   # Para OIDC
+      id-token: write
       contents: read
 
     env:
@@ -42,8 +41,7 @@ jobs:
       QUEUE_M: mujerq
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -51,22 +49,6 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id:  ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Set subscription + show whoami
-        shell: bash
-        run: |
-          set -euo pipefail
-          az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
-          echo "== az account show =="
-          az account show --query "{name:name, id:id, user:user}" -o jsonc
-          echo "== providers state (must be Registered) =="
-          az provider show --namespace Microsoft.App --query registrationState -o tsv
-          az provider show --namespace Microsoft.OperationalInsights --query registrationState -o tsv
-          echo "== role check at RG scope =="
-          az role assignment list \
-            --assignee "${{ secrets.AZURE_CLIENT_ID }}" \
-            --scope "/subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ inputs.resource_group }}" \
-            -o table
 
       - name: Ensure Container Apps extension
         shell: bash
@@ -94,8 +76,8 @@ jobs:
           AZURE_SQL_CONNECTION_STRING:  ${{ secrets.AZURE_SQL_CONNECTION_STRING }}
         run: |
           set -euo pipefail
-          [[ -n "${SERVICEBUS_CONNECTION_STRING:-}" ]] || { echo "Falta secret SERVICEBUS_CONNECTION_STRING"; exit 1; }
-          [[ -n "${AZURE_SQL_CONNECTION_STRING:-}"  ]] || { echo "Falta secret AZURE_SQL_CONNECTION_STRING"; exit 1; }
+          [[ -n "${SERVICEBUS_CONNECTION_STRING:-}" ]] || { echo "Falta SERVICEBUS_CONNECTION_STRING"; exit 1; }
+          [[ -n "${AZURE_SQL_CONNECTION_STRING:-}"  ]] || { echo "Falta AZURE_SQL_CONNECTION_STRING"; exit 1; }
 
           if az containerapp show -g "$RG" -n "$APP_ADD" >/dev/null 2>&1; then
             echo "==> Actualizando $APP_ADD"
@@ -108,10 +90,17 @@ jobs:
               --set-env-vars \
                 SERVICEBUS_CONNECTION_STRING=secretref:sb-conn \
                 AZURE_SQL_CONNECTION_STRING=secretref:sql-conn \
-                SERVICE_BUS_QUEUE_NAME="$QUEUE_IN" \
-              --ingress external --target-port 8080 \
-              --min-replicas 0 --max-replicas 1 \
-              --cpu 0.25 --memory 0.5Gi >/dev/null
+                SERVICE_BUS_QUEUE_NAME="$QUEUE_IN" >/dev/null
+
+            # habilitar/asegurar ingress por separado
+            EXT=$(az containerapp show -g "$RG" -n "$APP_ADD" --query "properties.configuration.ingress.external" -o tsv || echo "")
+            TP=$(az containerapp show -g "$RG" -n "$APP_ADD" --query "properties.configuration.ingress.targetPort" -o tsv || echo "")
+            if [ "$EXT" != "true" ] || [ "$TP" != "8080" ]; then
+              az containerapp ingress enable -g "$RG" -n "$APP_ADD" --type external --target-port 8080 --transport auto
+            fi
+
+            # reiniciar revisión para aplicar secrets
+            az containerapp revision restart -g "$RG" -n "$APP_ADD" >/dev/null
           else
             echo "==> Creando $APP_ADD"
             az containerapp create -g "$RG" -n "$APP_ADD" --environment "$ENV_NAME" \
@@ -141,8 +130,8 @@ jobs:
           AZURE_SQL_CONNECTION_STRING:  ${{ secrets.AZURE_SQL_CONNECTION_STRING }}
         run: |
           set -euo pipefail
-          [[ -n "${SERVICEBUS_CONNECTION_STRING:-}" ]] || { echo "Falta secret SERVICEBUS_CONNECTION_STRING"; exit 1; }
-          [[ -n "${AZURE_SQL_CONNECTION_STRING:-}"  ]] || { echo "Falta secret AZURE_SQL_CONNECTION_STRING"; exit 1; }
+          [[ -n "${SERVICEBUS_CONNECTION_STRING:-}" ]] || { echo "Falta SERVICEBUS_CONNECTION_STRING"; exit 1; }
+          [[ -n "${AZURE_SQL_CONNECTION_STRING:-}"  ]] || { echo "Falta AZURE_SQL_CONNECTION_STRING"; exit 1; }
 
           if az containerapp show -g "$RG" -n "$APP_WKR" >/dev/null 2>&1; then
             echo "==> Actualizando $APP_WKR"
@@ -157,9 +146,9 @@ jobs:
                 AZURE_SQL_CONNECTION_STRING=secretref:sql-conn \
                 SERVICE_BUS_QUEUE_NAME="$QUEUE_IN" \
                 HOMBRE_QUEUE_NAME="$QUEUE_H" \
-                MUJER_QUEUE_NAME="$QUEUE_M" \
-              --min-replicas 0 --max-replicas 1 \
-              --cpu 0.25 --memory 0.5Gi >/dev/null
+                MUJER_QUEUE_NAME="$QUEUE_M" >/dev/null
+
+            az containerapp revision restart -g "$RG" -n "$APP_WKR" >/dev/null
           else
             echo "==> Creando $APP_WKR"
             az containerapp create -g "$RG" -n "$APP_WKR" --environment "$ENV_NAME" \
