@@ -42,7 +42,7 @@ app.MapPost("/addcompra", async (CompraRequest req, IConfiguration cfg) =>
     await using var sb = new ServiceBusSenderClient(conn, queue);
     await sb.SendAsync(payload);
 
-    return Results.Ok(new { message = "Compra enviada", payload });
+    return Results.Ok(new { message = "Compra enviada-Leonisa", payload });
 })
 .WithName("AddCompra")
 .WithOpenApi();
