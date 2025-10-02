@@ -68,12 +68,11 @@ jobs:
             --scope "/subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ inputs.resource_group }}" \
             -o table
 
-      - name: Ensure Container Apps extension + providers
+      - name: Ensure Container Apps extension
         shell: bash
         run: |
           set -euo pipefail
           az extension add -n containerapp --upgrade || az extension update -n containerapp
-
 
       - name: Create/ensure ACA Environment
         shell: bash
@@ -93,7 +92,6 @@ jobs:
         env:
           SERVICEBUS_CONNECTION_STRING: ${{ secrets.SERVICEBUS_CONNECTION_STRING }}
           AZURE_SQL_CONNECTION_STRING:  ${{ secrets.AZURE_SQL_CONNECTION_STRING }}
-          API_TOKEN:                    ${{ secrets.API_TOKEN }}
         run: |
           set -euo pipefail
           [[ -n "${SERVICEBUS_CONNECTION_STRING:-}" ]] || { echo "Falta secret SERVICEBUS_CONNECTION_STRING"; exit 1; }
@@ -103,8 +101,7 @@ jobs:
             echo "==> Actualizando $APP_ADD"
             az containerapp secret set -g "$RG" -n "$APP_ADD" --secrets \
               sb-conn="$SERVICEBUS_CONNECTION_STRING" \
-              sql-conn="$AZURE_SQL_CONNECTION_STRING" \
-              api-token="${API_TOKEN:-}" >/dev/null
+              sql-conn="$AZURE_SQL_CONNECTION_STRING" >/dev/null
 
             az containerapp update -g "$RG" -n "$APP_ADD" \
               --image "$IMG_ADD" \
@@ -112,7 +109,6 @@ jobs:
                 SERVICEBUS_CONNECTION_STRING=secretref:sb-conn \
                 AZURE_SQL_CONNECTION_STRING=secretref:sql-conn \
                 SERVICE_BUS_QUEUE_NAME="$QUEUE_IN" \
-                API_TOKEN=secretref:api-token \
               --ingress external --target-port 8080 \
               --min-replicas 0 --max-replicas 1 \
               --cpu 0.25 --memory 0.5Gi >/dev/null
@@ -123,12 +119,11 @@ jobs:
               --ingress external --target-port 8080 \
               --min-replicas 0 --max-replicas 1 \
               --cpu 0.25 --memory 0.5Gi \
-              --secrets sb-conn="$SERVICEBUS_CONNECTION_STRING" sql-conn="$AZURE_SQL_CONNECTION_STRING" api-token="${API_TOKEN:-}" \
+              --secrets sb-conn="$SERVICEBUS_CONNECTION_STRING" sql-conn="$AZURE_SQL_CONNECTION_STRING" \
               --env-vars \
                 SERVICEBUS_CONNECTION_STRING=secretref:sb-conn \
                 AZURE_SQL_CONNECTION_STRING=secretref:sql-conn \
-                SERVICE_BUS_QUEUE_NAME="$QUEUE_IN" \
-                API_TOKEN=secretref:api-token >/dev/null
+                SERVICE_BUS_QUEUE_NAME="$QUEUE_IN" >/dev/null
           fi
 
       - name: Get AddCompra URL
