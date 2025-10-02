@@ -52,6 +52,22 @@ jobs:
           tenant-id:  ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Set subscription + show whoami
+        shell: bash
+        run: |
+          set -euo pipefail
+          az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          echo "== az account show =="
+          az account show --query "{name:name, id:id, user:user}" -o jsonc
+          echo "== providers state (must be Registered) =="
+          az provider show --namespace Microsoft.App --query registrationState -o tsv
+          az provider show --namespace Microsoft.OperationalInsights --query registrationState -o tsv
+          echo "== role check at RG scope =="
+          az role assignment list \
+            --assignee "${{ secrets.AZURE_CLIENT_ID }}" \
+            --scope "/subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ inputs.resource_group }}" \
+            -o table
+
       - name: Ensure Container Apps extension + providers
         shell: bash
         run: |
